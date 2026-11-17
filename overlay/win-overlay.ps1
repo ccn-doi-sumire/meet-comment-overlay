@@ -309,7 +309,8 @@ function ConvertTo-EmojiAnimation([byte[]]$Bytes, [double]$Size) {
     $delay = [int](Get-GifMeta $meta '/grctlext/Delay' 10)
     if ($delay -lt 2) { $delay = 10 }
     $disposal = [int](Get-GifMeta $meta '/grctlext/Disposal' 0)
-    $rect = New-Object System.Windows.Rect ($left * $scale, $top * $scale, $frame.PixelWidth * $scale, $frame.PixelHeight * $scale)
+    # Each product needs its own parentheses: in PowerShell "," binds tighter than "*".
+    $rect = New-Object System.Windows.Rect (($left * $scale), ($top * $scale), ($frame.PixelWidth * $scale), ($frame.PixelHeight * $scale))
 
     $visual = New-Object System.Windows.Media.DrawingVisual
     $dc = $visual.RenderOpen()
