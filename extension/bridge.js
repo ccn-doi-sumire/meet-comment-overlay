@@ -33,4 +33,11 @@
       reply({ kind: 'status', ok: false, error: 'reload', detail: String(err) });
     }
   });
+
+  // Self-diagnosis: the service worker asks where a comment's text travelled (see capture.js).
+  try {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg && msg.type === TAG && msg.kind === 'explain') reply({ kind: 'explain', text: String(msg.text || '') });
+    });
+  } catch (err) {}
 })();

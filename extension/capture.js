@@ -49,6 +49,7 @@
     error: '',
     sent: { comments: 0, reactions: 0 },
     lastDataChannelReaction: 0,
+    lastChannelChat: 0,
     channelLabels: new Set(),
   };
 
@@ -85,6 +86,14 @@
 
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data || e.data.source !== TAG + ':bridge') return;
+    if (e.data.kind === 'explain') {
+      try {
+        explainText(e.data.text);
+      } catch (err) {
+        log('diagnosis failed', err);
+      }
+      return;
+    }
     if (e.data.kind !== 'status') return;
     state.connected = !!e.data.ok;
     state.overlayPaused = !!e.data.paused;
@@ -356,10 +365,17 @@
       state.channelLabels.add(label);
       log('data channel', JSON.stringify(label));
     }
-    if (!/reaction/i.test(label)) return;
-    reactionChannels.add(ch);
+    if (/reaction/i.test(label)) {
+      reactionChannels.add(ch);
+      ch.addEventListener('message', (e) => {
+        handleReactionPayload(e.data, 'in').catch((err) => log('reaction decode failed', err));
+      });
+      return;
+    }
+    // Every other channel: chat messages ("collections"); kept a while for the self-diagnosis.
+    const openedAt = Date.now();
     ch.addEventListener('message', (e) => {
-      handleReactionPayload(e.data, 'in').catch((err) => log('reaction decode failed', err));
+      handleChannelMessage(e.data, label, Date.now() - openedAt).catch((err) => log('channel decode failed', err));
     });
   }
 
@@ -429,9 +445,10 @@
     return out;
   }
 
-  async function gunzip(bytes) {
+  /** Inflates gzip data, or zlib data with format 'deflate'. Null when it is not that format. */
+  async function gunzip(bytes, format) {
     if (typeof DecompressionStream === 'undefined') return null;
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format || 'gzip'));
     const reader = stream.getReader();
     const parts = [];
     let total = 0;
@@ -612,6 +629,168 @@
       }
     }
     armReactionMeasure();
+  }
+
+  // ---------------------------------------------------------------- chat (data channel)
+  // What Meet draws only changes while its tab is visible: Chrome does not let a hidden or
+  // covered tab draw, so the notification and the chat panel only catch up once the user comes
+  // back to Meet. The data itself keeps arriving: Meet receives chat over the RTCDataChannel
+  // labelled "collections" as compressed protobuf. A chat message is recognised by its shape
+  // (the one open-source Meet bots read), wherever it sits in the message:
+  //   { 1: "<message id>", 2: "spaces/<space>/devices/<device>", 3: time, 5: { 1: "<text>" } }
+  // background.js drops the copies that the page shows later.
+
+  const strictDecoder = new TextDecoder('utf-8', { fatal: true });
+
+  /** `bytes` as text, or null when it is not plain UTF-8 text of at most `max` bytes. */
+  function protoString(bytes, max) {
+    if (!bytes.length || bytes.length > max) return null;
+    try {
+      const s = strictDecoder.decode(bytes);
+      return /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(s) ? null : s;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** The uncompressed forms of a channel message: itself, or what its gzip / zlib parts hold. */
+  async function plainPayloads(bytes) {
+    if (bytes[0] === 0x78 && ((bytes[0] << 8) | bytes[1]) % 31 === 0) {
+      const inflated = await gunzip(bytes, 'deflate');
+      if (inflated) return [inflated];
+    }
+    const packed = findGzip(bytes, 0, []);
+    const out = packed.length === 1 && packed[0] === bytes ? [] : [bytes];
+    for (const gz of packed) {
+      const inflated = await gunzip(gz);
+      if (inflated) out.push(inflated);
+    }
+    return out.length ? out : [bytes];
+  }
+
+  function chatEntries(bytes, depth, out) {
+    if (depth > 10 || bytes.length < 6) return out;
+    const fields = protoFields(bytes);
+    if (!fields) return out;
+    const only = (no) => {
+      const hits = fields.filter((f) => f.no === no);
+      return hits.length === 1 && hits[0].wire === 2 ? hits[0].value : null;
+    };
+    const [idBytes, deviceBytes, body] = [only(1), only(2), only(5)];
+    const id = idBytes && protoString(idBytes, 300);
+    const device = deviceBytes && protoString(deviceBytes, 300);
+    if (id && device && /(^|\/)devices\/[^/]+$/.test(device) && body) {
+      const textField = (protoFields(body) || []).find((f) => f.no === 1 && f.wire === 2);
+      const text = textField && protoString(textField.value, 8000);
+      if (text && text.trim()) {
+        out.push({ id, text });
+        return out; // this block is one chat message
+      }
+    }
+    for (const f of fields) {
+      if (f.wire === 2) chatEntries(f.value, depth + 1, out);
+    }
+    return out;
+  }
+
+  const seenChatIds = new Set();
+
+  function flowChannelChat(entries, sinceOpen) {
+    const fresh = entries.filter((m) => !seenChatIds.has(m.id));
+    if (!fresh.length) return;
+    for (const m of fresh) seenChatIds.add(m.id);
+    while (seenChatIds.size > 5000) seenChatIds.delete(seenChatIds.values().next().value);
+    // Right after joining, or many at once: the messages written so far, not new ones.
+    const history = sinceOpen < 3000 || fresh.length > 3;
+    log('chat (channel)', { fresh, history });
+    if (history) return;
+    state.lastChannelChat = Date.now();
+    for (const m of fresh) emit({ type: 'comment', text: m.text, author: '', source: 'channel' });
+  }
+
+  // Self-diagnosis: when a comment was read from the page but not from a data channel,
+  // background.js asks where its text travelled (kind "explain"). The answer goes to the overlay
+  // (GET /diag), so another layout can be supported without DevTools. Recent channel messages
+  // are kept for that, in this page only.
+
+  const recentPayloads = []; // { at, label, hidden, payload }
+  let recentPayloadBytes = 0;
+
+  function rememberPayload(label, payload) {
+    if (payload.length > 256 * 1024) return;
+    const now = Date.now();
+    recentPayloads.push({ at: now, label, hidden: document.hidden, payload });
+    recentPayloadBytes += payload.length;
+    while (recentPayloads.length && (recentPayloadBytes > 4 << 20 || now - recentPayloads[0].at > 15 * 60 * 1000)) {
+      recentPayloadBytes -= recentPayloads.shift().payload.length;
+    }
+  }
+
+  /** Fields from the top of `bytes` down to the text holding `needle`: [{ no, value }, ...]. */
+  function chainTo(bytes, needle, depth) {
+    const fields = depth < 12 ? protoFields(bytes) : null;
+    for (const f of fields || []) {
+      if (f.wire !== 2 || decoder.decode(f.value).indexOf(needle) < 0) continue;
+      return [{ no: f.no, value: f.value }].concat(chainTo(f.value, needle, depth + 1));
+    }
+    return [];
+  }
+
+  function protoOutline(bytes, depth, budget) {
+    const out = { len: bytes.length };
+    const text = protoString(bytes, 4000);
+    if (text !== null) out.text = text.slice(0, 60);
+    const fields = depth > 0 ? protoFields(bytes) : null;
+    if (fields && fields.length) {
+      out.fields = [];
+      for (const f of fields) {
+        if (budget.left-- <= 0) break;
+        out.fields.push(f.wire === 0 ? { no: f.no, varint: f.value } : Object.assign({ no: f.no }, protoOutline(f.value, depth - 1, budget)));
+      }
+    }
+    return out;
+  }
+
+  let explained = 0;
+
+  function explainText(text) {
+    // The longest piece without spaces: spacing differs between the page and the data.
+    const needle = String(text || '').split(/\s+/).sort((a, b) => b.length - a.length)[0] || '';
+    if (explained >= 4 || needle.length < 2) return;
+    explained++;
+    const now = Date.now();
+    const hits = [];
+    const buffered = {};
+    for (const p of recentPayloads) {
+      buffered[p.label] = (buffered[p.label] || 0) + 1;
+      if (hits.length >= 3 || decoder.decode(p.payload).indexOf(needle) < 0) continue;
+      const chain = chainTo(p.payload, needle, 0);
+      // Three levels above the text: the block of that one message (id, sender, time, text).
+      const block = chain.length > 3 ? chain[chain.length - 4].value : p.payload;
+      hits.push({
+        label: p.label,
+        secondsAgo: Math.round((now - p.at) / 1000),
+        hiddenThen: p.hidden,
+        plainBytes: p.payload.length,
+        chatFound: chatEntries(p.payload, 0, []).length,
+        path: chain.map((c) => c.no),
+        block: protoOutline(block, 4, { left: 60 }),
+      });
+    }
+    const report = { reason: 'channel-search', needle: needle.slice(0, 30), hidden: document.hidden, hits, buffered, labels: [...state.channelLabels] };
+    log('diagnosis (channel search)', report);
+    window.postMessage({ source: TAG, kind: 'events', events: [{ type: 'diag', report }] }, location.origin);
+  }
+
+  async function handleChannelMessage(data, label, sinceOpen) {
+    const bytes = await toBytes(data);
+    if (!bytes || bytes.length < 6 || bytes.length > 1 << 20) return;
+    const payloads = await plainPayloads(bytes);
+    for (const p of payloads) rememberPayload(label, p);
+    if (!settings.chat || !/collection/i.test(label)) return;
+    const found = [];
+    for (const p of payloads) chatEntries(p, 0, found);
+    flowChannelChat(found, sinceOpen);
   }
 
   function hookWebRTC() {
@@ -991,6 +1170,7 @@
       const report = {
         reason: 'marker',
         url: location.pathname,
+        hidden: document.hidden,
         ancestors: chain,
         around: outline(group, 7, { left: 120 }),
         dataMessageIds: topLevelMessages().length,
@@ -1098,6 +1278,7 @@
       sent: state.sent,
       dataChannels: [...state.channelLabels],
       lastDataChannelReaction: state.lastDataChannelReaction ? new Date(state.lastDataChannelReaction).toLocaleTimeString() : null,
+      lastChannelChat: state.lastChannelChat ? new Date(state.lastChannelChat).toLocaleTimeString() : null,
       chatMessagesInPage: topLevelMessages().length,
       lastMessages: msgs,
       emojiImages: emojiImgs.slice(0, 30),
@@ -1114,7 +1295,7 @@
       emit({ type: 'reaction', emoji: '👏' });
     },
     // exposed for tests
-    _internals: { emojisIn, singleEmoji, emojiFromUrl, parseTime, protoChunks, textsIn, handleReactionPayload, textOf, chatHeader },
+    _internals: { emojisIn, singleEmoji, emojiFromUrl, parseTime, protoChunks, textsIn, handleReactionPayload, textOf, chatHeader, chatEntries, plainPayloads },
   };
 
   try {
