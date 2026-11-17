@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Meet Comment Overlay",
   "version": "1.4.2",
-  "description": "Google Meet のチャットとリアクションを、デスクトップのオーバーレイにニコニコ風に流します。",
+  "description": "Google Meet のチャットとリアクションを、デスクトップの画面の上に流して表示します。",
   "minimum_chrome_version": "111",
   "host_permissions": [
     "http://127.0.0.1/*"
