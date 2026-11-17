@@ -1,7 +1,7 @@
 // Runs inside the chat.google.com iframe that Meet (with Google Chat-based in-call chat) uses for
 // its chat panel. Only active when that iframe sits inside meet.google.com.
 //
-// Self-diagnosis: a message containing "#nicotest" sends the structure around it to the overlay
+// Self-diagnosis: a message containing "#meettest" sends the structure around it to the overlay
 // (GET http://127.0.0.1:39393/diag), so the selectors below can be fixed when Chat changes.
 (() => {
   if (window.top === window) return;
@@ -105,7 +105,7 @@
 
   // ---------------------------------------------------------------- diagnosis
 
-  const MARKER = '#nicotest';
+  const MARKER = '#meettest';
   let lastDiagnosis = 0;
 
   function describe(el) {

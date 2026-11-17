@@ -113,7 +113,7 @@ function navNote(msg) {
 function pushToOverlay(events) {
   if (state.paused) return;
   // `void` keeps the result undefined. Pass a function, not null: JXA crashes calling a null block.
-  const js = 'void (window.nico && window.nico.push(' + JSON.stringify(events) + '))';
+  const js = 'void (window.meetOverlay && window.meetOverlay.push(' + JSON.stringify(events) + '))';
   for (const wv of state.webViews) wv.evaluateJavaScriptCompletionHandler(js, function () {});
 }
 
@@ -135,7 +135,7 @@ function handleEvents(events) {
       clean.push({ type: 'reaction', emoji: e.emoji.slice(0, 16), count: Math.min(50, Math.max(1, e.count | 0)) });
       state.counts.reactions++;
     } else if (e.type === 'diag' && e.report) {
-      // Self-diagnosis from the extension (a chat message containing "#nicotest"); see GET /diag.
+      // Self-diagnosis from the extension (a chat message containing "#meettest"); see GET /diag.
       state.diags.push({ at: new Date().toLocaleTimeString('ja-JP'), report: e.report });
       if (state.diags.length > 30) state.diags.shift();
       log('診断情報を受け取りました: http://127.0.0.1:' + state.port + '/diag');

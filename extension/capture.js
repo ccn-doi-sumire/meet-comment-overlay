@@ -934,10 +934,10 @@
   }
 
   // ---------------------------------------------------------------- self-diagnosis
-  // Send a chat message containing "#nicotest": the page structure around where it shows up is
+  // Send a chat message containing "#meettest": the page structure around where it shows up is
   // sent to the overlay (which logs it), so a changed Meet layout can be fixed without DevTools.
 
-  const MARKER = '#nicotest';
+  const MARKER = '#meettest';
   let lastDiagnosis = 0;
 
   function describe(el) {
