@@ -85,6 +85,8 @@ $State = @{
   Pending      = @{}                                        # emoji -> count, released every 150 ms
   Downloads    = @{}                                        # emoji -> $true while loading
   Random       = New-Object System.Random
+  Recent       = New-Object System.Collections.ArrayList   # last comments with their source, for GET /log
+  Diags        = New-Object System.Collections.ArrayList   # self-diagnosis reports from the extension, for GET /diag
   PixelsPerDip = 1.0
   Tick         = 0
   Listener     = $null
@@ -481,6 +483,9 @@ function Invoke-Events($Events) {
     if ($e.type -eq 'comment' -and $e.text -is [string] -and $e.text.Trim()) {
       $State.Counts.comments++
       $accepted++
+      $shown = $e.text.Substring(0, [Math]::Min(200, $e.text.Length))
+      [void]$State.Recent.Add([ordered]@{ at = (Get-Date).ToString('HH:mm:ss'); text = $shown; source = [string]$e.source })
+      if ($State.Recent.Count -gt 50) { $State.Recent.RemoveAt(0) }
       if (-not $State.Paused) {
         $scale = 0.0; $secs = 0.0
         try { if ($null -ne $e.fontScale) { $scale = [double]$e.fontScale } } catch { }
@@ -498,6 +503,11 @@ function Invoke-Events($Events) {
           if ($State.Pending.ContainsKey($emoji)) { $State.Pending[$emoji] += $count } else { $State.Pending[$emoji] = $count }
         }
       }
+    } elseif ($e.type -eq 'diag' -and $null -ne $e.report) {
+      # Self-diagnosis from the extension (which source saw a comment, the page structure, ...).
+      [void]$State.Diags.Add([ordered]@{ at = (Get-Date).ToString('HH:mm:ss'); report = $e.report })
+      if ($State.Diags.Count -gt 30) { $State.Diags.RemoveAt(0) }
+      Write-Log "診断情報を受け取りました: http://127.0.0.1:$Port/diag"
     }
   }
   return $accepted
@@ -534,6 +544,13 @@ function Send-Response($Conn, [int]$Status, [string]$ContentType, [byte[]]$Body)
 
 function Send-Json($Conn, [int]$Status, $Object) {
   Send-Response $Conn $Status 'application/json' ($Utf8.GetBytes(($Object | ConvertTo-Json -Compress -Depth 5)))
+}
+
+# A list as a JSON array. -InputObject keeps it a list: the pipeline would unwrap a single item.
+function Send-JsonList($Conn, $List, [int]$Depth) {
+  $json = '[]'
+  if ($List.Count -gt 0) { $json = ConvertTo-Json -InputObject @($List) -Depth $Depth }
+  Send-Response $Conn 200 'application/json' ($Utf8.GetBytes($json))
 }
 
 function Find-HeaderEnd([byte[]]$Bytes) {
@@ -598,6 +615,14 @@ function Invoke-Request($Conn) {
     Set-OverlayScreen ([int]$index)
     Save-OverlaySettings
     Send-Json $Conn 200 @{ ok = $true; screens = (Get-ScreenList); current = $script:ScreenIndex; allowAll = $false }
+    return $true
+  }
+  if ($method -eq 'GET' -and $path -eq '/log') {
+    Send-JsonList $Conn $State.Recent 4
+    return $true
+  }
+  if ($method -eq 'GET' -and $path -eq '/diag') {
+    Send-JsonList $Conn $State.Diags 60
     return $true
   }
   if ($method -eq 'GET' -and $path -eq '/debug') {
