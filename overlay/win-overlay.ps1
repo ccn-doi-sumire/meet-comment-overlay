@@ -71,6 +71,8 @@ $Settings = @{
   # they are only drawn more simply, as Meet does: smaller and as a still image.
   BusyReactions    = 24
   ReactionSizeBusy = 32
+  # How long a reaction waits for the image of an emoji that has not been used before.
+  EmojiWaitMs      = 4000
   ShowAuthor       = $false
 }
 
@@ -755,13 +757,18 @@ $Timer.Add_Tick({
 
     $now = [DateTime]::UtcNow
     for ($i = $PendingReactions.Count - 1; $i -ge 0; $i--) {
-      if ($PendingReactions[$i].At -le $now) {
-        $p = $PendingReactions[$i]
-        $PendingReactions.RemoveAt($i)
-        if (-not $State.Paused) {
-          $busy = (Get-LiveCount 'reaction') -ge $Settings.BusyReactions
-          Add-Reaction $p.Emoji $busy
-        }
+      $p = $PendingReactions[$i]
+      if ($p.At -gt $now) { continue }
+      # An emoji seen for the first time: its image is still being fetched. Hold the reaction back
+      # for a moment rather than drawing the one-colour glyph of the emoji font.
+      if (-not $State.Paused -and -not $State.Emoji.ContainsKey($p.Emoji) -and ($now - $p.At).TotalMilliseconds -lt $Settings.EmojiWaitMs) {
+        Request-EmojiImage $p.Emoji
+        continue
+      }
+      $PendingReactions.RemoveAt($i)
+      if (-not $State.Paused) {
+        $busy = (Get-LiveCount 'reaction') -ge $Settings.BusyReactions
+        Add-Reaction $p.Emoji $busy
       }
     }
     if ($State.Tick % 8 -eq 0) {
