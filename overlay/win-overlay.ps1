@@ -61,6 +61,7 @@ $Settings = @{
   SecondsOnScreen  = 6      # time for a short comment to cross the screen
   MaxComments      = 80
   MaxLength        = 80
+  TopMargin        = 40     # px between the top of the screen and the first line of comments
   # Reactions match Meet's own (measured): 43 px, straight up at 136 px/s for 3.05 s,
   # fully visible until 72 % of the way and then fading out.
   ReactionSize     = 43
@@ -197,7 +198,7 @@ function Get-Metrics([double]$FontScale = 0, [double]$Seconds = 0) {
   if ($Seconds -lt 1 -or $Seconds -gt 60) { $Seconds = $Settings.SecondsOnScreen }
   $fontSize = [Math]::Max(14, [Math]::Round($h / $Settings.FontDivisor * $FontScale))
   $laneHeight = [Math]::Round($fontSize * 1.3)
-  $laneCount = [Math]::Max(1, [Math]::Floor(($h - 8 - $fontSize * 0.5) / $laneHeight))
+  $laneCount = [Math]::Max(1, [Math]::Floor(($h - $Settings.TopMargin - $fontSize * 0.5) / $laneHeight))
   return @{ W = $w; H = $h; FontSize = $fontSize; LaneHeight = $laneHeight; LaneCount = $laneCount; Speed = $w / $Seconds }
 }
 
@@ -253,7 +254,7 @@ function Add-Comment([string]$Text, [string]$Author, [double]$FontScale = 0, [do
   $gap = $m.FontSize * 1.2
   $State.Lanes[$lane] = $now.AddMilliseconds((($width + $gap) / $m.Speed) * 1000)
 
-  $y = 8 + $lane * $m.LaneHeight
+  $y = $Settings.TopMargin + $lane * $m.LaneHeight
   $duration = (($m.W + $width) / $m.Speed) * 1000
   $move = New-Object System.Windows.Media.TranslateTransform ($m.W, $y)
   $grid.RenderTransform = $move

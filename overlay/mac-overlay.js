@@ -522,7 +522,7 @@ function createOverlay(screen) {
     if (insets && insets.top) top = Math.round(insets.top);
   } catch (e) {}
   if (!top) top = Math.max(0, Math.round(frame.size.height - screen.visibleFrame.size.height - (screen.visibleFrame.origin.y - frame.origin.y)));
-  top = Math.min(top, 48) + 6;
+  top = Math.min(top, 48) + 30;
 
   // Load the page as a string with the settings injected (no file:// access rules involved).
   const html = $.NSString.stringWithContentsOfFileEncodingError(state.dir + '/overlay.html', $.NSUTF8StringEncoding, null);
